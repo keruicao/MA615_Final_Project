@@ -1,0 +1,535 @@
+---
+title: "MA615 Final Project"
+author: "Kerui Cao"
+date: "12/13/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F,message = F,warning = F,fig.align = "c",fig.height = 3.5)
+pacman::p_load(tidyverse,tidytext,janeaustenr,psych,GPArotation,cluster,stringr,jsonlite,Hmisc,ggmap,maps,leaflet,ggmap)
+```
+
+# Data preparation Clean
+
+\qquad I use *three dataset*, one contains the information of the number of imigrations of each states of the America, another one is the dataset contains millions of business information, the last one contains reviews about millions of restaurants, there are four sub datasets in total, I use "Business" dataset which contains the infomation of part of businesses listed on Yelp. There are 192609 businesses in this dataset, the main steps of data preparation and clean process are:  
+
++ Download the Imigration data;
++ Download the Yelp Compititoin Dataset;
++ **Using API** from Yelp to download review and match them to selected restaurants;
++ Extract restaurant information from all these businesses;
++ Extract restaurant with more than 100 reviews;
++ Extract cities with more than 150 resturants, which can exactly give us 10 cities after filtering;
++ Delete variables with more than 40% missing value;
++ Reorganize some variables;
++ Delete observations with missing values;  
+
+```{r include=FALSE}
+business = stream_in(file("business.json"),verbose = FALSE,pagesize = 10000)
+business_flat = flatten(business)
+```
+
+
+```{r include=FALSE}
+cagu = business_flat[which(str_detect(business_flat$categories,"Restaurants")),]
+```
+
+
+```{r include=FALSE}
+cagu = cagu %>% filter(review_count>100)
+```
+
+
+```{r include=FALSE}
+# Calculate the proportion of missing value for each variable
+missing = cagu %>% apply(MARGIN = 2, function(x){round(sum(is.na(x))/length(x)*100,2)}) %>% 
+  data.frame()
+colnames(missing) = "Prop"
+
+# Find variables with more than 40% missing values
+missing = missing %>% mutate(feature = rownames(missing)) %>% filter(Prop > 40)
+del = missing$feature
+
+# Delete those variables
+cagu = dplyr::select(cagu,-del)
+```
+
+\qquad Variables "hours.Monday", "hours.Tuesday", "hours.Wednesday", "hours.Thursday", "hours.Friday", "hours.Saturday", "hours.Sunday" indicate the operational hours for each businesses, we don't need these information, so we delete these variables.  
+
+```{r include=FALSE}
+cagu = dplyr::select(cagu,-c("hours.Monday","hours.Tuesday","hours.Wednesday","hours.Thursday",
+                      "hours.Friday","hours.Saturday","hours.Sunday"))
+```
+
+\qquad Some variables whose value are list, for example, the value of variables "attributes.GoodForMeal" is ***{'dessert': False, 'latenight': False, 'lunch': True, 'dinner': True, 'brunch': False, 'breakfast': False}***, we simple re-define this variables as a numeric score by counting how many "True" contained, for the example above, the re-defined value is 2. We do the same for variables "attributes.BusinessParking" and "attributes.Ambience".  
+
+```{r include=FALSE}
+cagu = mutate(cagu,attributes.GoodForMeal = str_count(cagu$attributes.GoodForMeal,"True"))
+cagu = mutate(cagu,attributes.BusinessParking = str_count(attributes.BusinessParking,"True"))
+cagu = mutate(cagu,attributes.Ambience = str_count(attributes.Ambience,"True"))
+```
+
+\qquad For variable "categories", we can see that some restaurant contains words like "Chinese", "French" and so on, so I created new binary variables indicating those informations.  
+
+```{r include=FALSE}
+cagu = mutate(cagu,Chinese = ifelse(str_detect(cagu$categories,"Chinese"),1,0))
+cagu = mutate(cagu,French = ifelse(str_detect(cagu$categories,"French"),1,0))
+cagu = mutate(cagu,Mexican = ifelse(str_detect(cagu$categories,"Mexican"),1,0))
+cagu = mutate(cagu,Italian = ifelse(str_detect(cagu$categories,"Italian"),1,0))
+cagu = mutate(cagu,Indian = ifelse(str_detect(cagu$categories,"Indian"),1,0))
+cagu = mutate(cagu,Japanese = ifelse(str_detect(cagu$categories,"Japanese"),1,0))
+cagu = mutate(cagu,American = ifelse(str_detect(cagu$categories,"American"),1,0))
+```
+
+\qquad Some binary variables contain value "True" and "False" and "None", but only a small part of them are "None", so I simply delete them.  
+
+\qquad Some variables contain value like "u'average'", we need to transforme it into only "average".  
+
+
+
+```{r include=FALSE}
+cagu = cagu %>% mutate(attributes.Caters = ifelse(cagu$attributes.Caters == 
+                       "None",NA, as.character(cagu$attributes.Caters)))
+cagu = cagu %>% mutate(attributes.BusinessAcceptsCreditCards = 
+                         ifelse(cagu$attributes.BusinessAcceptsCreditCards == 
+                       "None",NA,as.character(cagu$attributes.BusinessAcceptsCreditCards)))
+```
+
+```{r include=FALSE}
+pat = "(?<=').*?(?=')"
+cagu = cagu %>% mutate(attributes.NoiseLevel = 
+                         str_extract(attributes.NoiseLevel,pattern = pat))
+cagu = cagu %>% mutate(attributes.WiFi = 
+                         str_extract(attributes.WiFi,pattern = pat))
+cagu = cagu %>% mutate(attributes.Alcohol = 
+                         str_extract(attributes.Alcohol,pattern = pat))
+cagu = cagu %>% mutate(attributes.RestaurantsAttire = 
+                         str_extract(attributes.RestaurantsAttire,pattern = pat))
+
+cagu = drop_na(cagu)
+
+cagu = mutate(cagu,
+              attributes.GoodForKids = ifelse(attributes.GoodForKids=="True",1,0),
+              attributes.RestaurantsReservations = ifelse(attributes.RestaurantsReservations=="True",1,0),
+              attributes.Caters = ifelse(attributes.Caters=="True",1,0),
+              attributes.RestaurantsTakeOut = ifelse(attributes.RestaurantsTakeOut=="True",1,0),
+              attributes.OutdoorSeating = ifelse(attributes.OutdoorSeating=="True",1,0),
+              attributes.BikeParking = ifelse(attributes.BikeParking=="True",1,0),
+              attributes.HasTV = ifelse(attributes.HasTV=="True",1,0),
+              attributes.RestaurantsGoodForGroups = ifelse(attributes.RestaurantsGoodForGroups=="True",1,0),
+              attributes.RestaurantsDelivery = ifelse(attributes.RestaurantsDelivery=="True",1,0),
+              attributes.BusinessAcceptsCreditCards = ifelse(attributes.BusinessAcceptsCreditCards=="True",1,0),)
+cagu = mutate(cagu,attributes.RestaurantsPriceRange2 = as.numeric(attributes.RestaurantsPriceRange2 ))
+```
+
+```{r include=FALSE}
+city.list = cagu %>% count(city) %>% arrange(desc(n)) %>% filter(n>178)
+cagu = cagu[which(cagu$city %in% city.list$city),]
+```
+
+```{r}
+imi = read.csv("imigrates.csv")
+imi.c = imi %>% filter(`Origin..tooltip.` == c("China:","France","Mexico","Italy","India","Japan"))
+imi.c = imi.c %>% droplevels()
+imi.c = imi.c %>% mutate(MSA = str_extract(imi.c$MSA,pattern = ", \\w*") %>% gsub(pattern = ", ",replacement = ""),
+                         `Origin..tooltip.` = gsub(imi.c$`Origin..tooltip.`,pattern = ":",replacement = ""))
+imi.f = imi.c %>% dplyr::select("ï..Round.total.MSA.population","Immigrants","MSA","Origin..tooltip.")
+names(imi.f) = c("Total.Population","Immigrants","MSA","Origin")
+tot = imi.f %>% group_by(MSA) %>% summarise(tot = sum(Total.Population,na.rm = T))
+imi = imi.f %>% group_by(MSA,Origin) %>% summarise(imi = sum(Immigrants)) %>% pivot_wider(names_from = Origin,values_from = imi)
+imi = impute(imi,0)
+imi = inner_join(imi,tot,by = "MSA")
+imi = imi %>% mutate(China.p = China/tot,
+                     India.p = India/tot,
+                     Italy.p = Italy/tot,
+                     Japan.p = Japan/tot,
+                     France.p = France/tot,
+                     Mexico.p = Mexico/tot) %>% dplyr::select(-c(tot,China,India,Italy,Japan,France,Mexico))
+```
+
+```{r}
+cagu.h = left_join(x = cagu,y = imi,by = c("state" = "MSA")) %>% drop_na()
+```
+
+\newpage
+
+# EDA
+
+## Distribution of Star ratings
+
+\qquad Our research interest lies on the star rating and review for each restaurants, so we try to apply exploratory data analysis around star ratings of restaurants.  
+
+\qquad First we will see the distributions of star ratings of restaurants, and we are also interested in the difference of distributions across cities.  
+
+```{r}
+a = cagu.h %>% group_by(city) %>% summarise(average = mean(stars),
+                                            max = max(stars),
+                                            min = min(stars)) %>% mutate(id = 1:length(min))
+
+a1 = ggplot(a) + geom_pointrange(aes(x = id,y = average,ymin = min,ymax = max))+
+  scale_x_discrete(breaks = NULL) + xlab("City")
+a2 = ggplot(cagu.h) +
+ aes(x = stars, fill = city) +
+ geom_density(adjust = 1L,alpha = 0.2) +
+ scale_fill_hue() +
+ theme(legend.position = "")+ xlab("Star Rating")
+
+a3 = ggplot(cagu.h)+geom_violin(aes(y = stars,x = city))+ scale_x_discrete(breaks = NULL)+ xlab("City")
+
+gridExtra::grid.arrange(gridExtra::arrangeGrob(a1,a3,nrow = 1),a2,ncol = 1)
+```
+
+\qquad Above plot shows the distribution of star ratings, as for the upper left plot, black points are the average star ratings for selected ten city, vertical lines shows the range of star ratings, upper right plot is the violin plot of star ratings of each cities, lower plot shows the density of star ratings in for each cities. We can tell that restaurants in different cities have similar didtribution, which is centering at 4 stars, and barely seeing restaurants with lower than 2 stars. So we may consider that there is no difference between cities.  
+
+\qquad We consider that maybe city is not a good standard to separate and group restaurants, so I tried to separate and group restaurants by districts, which can be indicated by variable "postal_code", here I first tried restaurants in Las Vegas, because we have more date from restaurants in Las Vegas, which is 1916 restaurants, and I only pick districts with more than 30 restaurants, below is part of the list of chosen districts:  
+
+```{r}
+cagu.las = cagu.h %>% filter(city == "Las Vegas")
+zip.list = cagu.las %>% count(postal_code) %>% arrange(desc(n)) %>% filter(n > 30)
+colnames(zip.list) = c("Zip.Code","Num of Restaurant")
+kableExtra::kable(zip.list[1:10,],booktabs = T,caption = "List of districts",align = "c",format = 'latex') %>% 
+  kableExtra::kable_styling(font_size = 8,bootstrap_options = 
+                  c('striped','hover','condensed',"responsive"),latex_options = "HOLD_position")
+```
+
+\qquad Do the same as grouping restaurants by cities, we drew the same plot shown below, from the plot we can tell that restaurants from different district have quite different distributions, which is more significant than the difference between grouping by cities, so district is a better standard to separate and group restaurants.  
+
+```{r}
+a.las = cagu.las %>% group_by(postal_code) %>% summarise(average = mean(stars),
+                                            max = max(stars),
+                                            min = min(stars)) %>% mutate(id = 1:length(min))
+
+a1 = ggplot(a.las) + geom_pointrange(aes(x = id,y = average,ymin = min,ymax = max))+
+  scale_x_discrete(breaks = NULL) + xlab("Districts")
+a2 = ggplot(cagu.las) +
+ aes(x = stars, fill = postal_code) +
+ geom_density(adjust = 1L,alpha = 0.2) +
+ scale_fill_hue() +
+ theme(legend.position = "")+ xlab("Star Rating")
+
+a3 = ggplot(cagu.las)+geom_boxplot(aes(y = stars,x = postal_code))+ scale_x_discrete(breaks = NULL)+ xlab("postal_code")
+
+gridExtra::grid.arrange(gridExtra::arrangeGrob(a1,a3,nrow = 1),a2,ncol = 1)
+```
+
+\qquad Than we will dive deeper into the data, we try to see the difference between distribution of star ratings between restaurants distinguished by features. I examined all 33 features, below are part of the result.  
+
+*Noise Level*
+
+```{r message=FALSE, warning=FALSE,fig.height=3}
+ggplot(cagu.las) +
+ aes(x = stars) +
+ geom_density() +
+ scale_fill_hue() + facet_grid(rows = vars(attributes.NoiseLevel),scales = "free_y") + theme(legend.position = "")
+```
+
+\qquad Above plot shows the distribution of stars of restaurants with different noise level, we can see clearly that, ignore difference between districts, as the noise level increase, the stars center at lower score, quiet restaurants center at 4, loud restaurants center at 3.  
+
+\qquad More detailed we want to see if the proportion of different kinds of noise level restautants in district with highest average star ratings are differnet with district with lowest star ratings.  
+
+```{r}
+tem = cagu.las %>% count(postal_code,attributes.NoiseLevel) %>%
+  pivot_wider(names_from = attributes.NoiseLevel,values_from = n)
+tem = impute(tem,0)
+tem = inner_join(a.las,tem,by = "postal_code") %>% group_by(average.x) %>% summarise(num.loud = mean(loud),num.very.loud = mean(very_loud),num.quiet = mean(quiet)) %>% pivot_longer(cols = 2:4,names_to = "noise.level",values_to = "Number.restaurants")
+tem <- tem %>%
+ filter(Number.restaurants >= 1L & Number.restaurants <= 36L)
+
+ggplot(tem)+ 
+  geom_point(aes(y = average.x,x = Number.restaurants)) + geom_smooth(aes(y = average.x,x = Number.restaurants),se = F)+
+  facet_wrap(~noise.level)
+```
+
+\qquad We can see the if we look at the average star ratings of each district, as the number of loud restaurants increases, the average of star ratings of that districts display a clear trend going down, it is a little confusing that as the number of quiet restaurants increases, the average star ratings will go up and go down, but this may be affect by some other attributes of restaurants, we will continue explore attributes that will affect star ratings of restaurants.  
+
+*Business Parking*
+
+```{r message=FALSE, warning=FALSE}
+ggplot(cagu.las) +
+ aes(x = stars) +
+ geom_density() +
+ scale_fill_hue() + facet_grid(rows = vars(attributes.BusinessParking),scales = "free_y") + theme(legend.position = "")
+```
+
+\qquad There are five types of business parking, garage, street,validated, lot and valet, if a restaurant has more parking choice, it will have higher score of business parking, above plot shows the distribution of stars of restaurants with different business parking score, here wield thing happend, according to plot, the distributions of restaurants with lower business parking scores are centered at higher star ratings, which means the more convenient for parking, the lower star ratings, still this may be biased because we didn't control the influence from other variables, to fix this problem we may need construct models, which is out of the scope of EDA.  
+
+*Chinese Restaurants*
+
+```{r}
+ggplot(cagu.las) +
+ aes(x = stars,fill = city,color = postal_code) +
+ geom_density(adjust = 1L,alpha = 0.1) +
+ scale_fill_hue() + facet_grid(rows = vars(Chinese),scales = "free_y") + theme(legend.position = "")
+```
+
+\qquad Above plot shows the distribution of star ratings of restaurant providing Chinese dishes and not providing Chinese dishes, we can see clearly that Chinese restaurants tend to have lower stars, as for the difference between districts, we can see that for some districts, Chinese restaurants center at around 4 stars rather than 3.5 stars.  
+
+\qquad I am a little interested about this phenomenon, so I will explore further.  One explanation could be that proportion of Chinese in that city may influence the star ratiings of Chinese Restaurants, so I included a new dataset containing records of migrants numbers of each states, below is the scatter point plot of the proportion of Chinese in each cities and star ratings of restaurants.
+
+```{r}
+a = cagu.h%>%filter(Chinese==1)
+b = a %>% group_by(as.factor(China.p)) %>% summarise(mean = mean(stars))
+fu = function(x){
+  im = as.numeric(b[which(b$`as.factor(China.p)`==x),2])
+  return(im)
+}
+ggplot(a)+geom_violin(aes(x = factor(China.p),y = stars)) +scale_x_discrete(breaks = NULL) + xlab("Proportion of Chinese")
+```
+
+\qquad Because we have restaurants data from only 5 states, so the number of unique values of proportion of Chinese is only 5, from above plot we can see that there is no clear pattern that indicating that the star ratings of Chinese restuarants are related to the proportion of Chinese imigrants.  
+
+\qquad To further explore the reason Chinese restaurants having lower stars, and based on previous findings, we suspect that noisy restaurants will have lower stars, below plot shows the distribution of noise level of restaurants providing Chinese dishes and not providing Chinese dishes, we can see that Chinese restaurants have similar distribution and even higher proportion of quiet restaurants, so there may be some other factors. To further analyze those factors affecting star ratings, we need some models to do this.  
+
+```{r message=FALSE, warning=FALSE}
+ggplot(cagu.h) +
+ aes(x = attributes.NoiseLevel) +
+ geom_histogram(adjust = 1L,stat="count",) +
+ scale_fill_hue() + facet_grid(rows = vars(Chinese),scales = "free_y") + theme(legend.position = "")
+```
+
+\newpage
+
+## Text Mining on Review
+
+\qquad the reviews of restaurants also interests us, so I collected the review of selected restaurants, but due to the limitation of Api, for each restuarant, I can only have 3 reviews, first we will analysis the most comon words appear in reviews.  
+
+```{r}
+review = read.csv("review.csv") %>% select(X1,X2) %>% drop_na()
+set.seed(2019)
+# sam = sample(x = 1:length(review$X1),size = 100,replace = F)
+# review = review[sam,]
+
+colnames(review) = c("business_id","review")
+review_untoken <- review %>%
+  unnest_tokens(bigram, review, token = "ngrams", n = 2)
+
+review_word_count = review_untoken %>% count(bigram,sort = T)
+
+review_sep = review_word_count %>% separate(bigram,c("word1","word2"),sep = " ")
+
+review_filtered <- review_sep %>%
+  filter(!word1 %in% stop_words$word & !word2 %in% stop_words$word &
+           !str_detect(word1,pattern = "[0-9]") & 
+           !str_detect(word2,pattern = "[0-9]"))
+
+kableExtra::kable(review_filtered[1:8,],align = "c",booktabs = T, caption = "Most common two words appear together",format = "latex") %>% kableExtra::kable_styling(latex_options = "HOLD_position")
+```
+
+\qquad We can see that the most common words appear together is "Las Vegas", because I choose all the restaurants from Las Vegas, as for the rest, such as "Customer Service", "Happy Hour", which means it is likely in most time people like the Las Vegas restaurants, and "Late Night" also tell an interesting story, because Las Vegas is a "Never-sleep-city", and I also have a question, is there a lot Mexican restaurants in Las Vegas? So I exctract the category of all restaurants, I divided them into "Chinese", "French", "Mexican", "Italian", "Indian", "Japanese" and "American", below is the proportion of each kind of restaurants:  
+
+```{r}
+n = length(cagu.las$Chinese)
+tem = cagu.las %>% summarise(Chinese = sum(Chinese)/n,
+                       French = sum(French)/n,
+                       Mexican = sum(Mexican)/n,
+                       Italian = sum(Italian)/n,
+                       Indian = sum(Indian)/n,
+                       Japanese = sum(Japanese)/n) %>% pivot_longer(cols = 1:6,names_to = "Type",values_to = "Proportion")
+ggplot(tem) + geom_col(aes(x = Type,y = Proportion))
+```
+
+\qquad Now we can see that for sure there are a lot Mexican restaurants in Las Vegas.  
+
+\qquad We can also see the most seen three words that appears together.  
+
+```{r}
+colnames(review) = c("business_id","review")
+review_untoken_three <- review %>%
+  unnest_tokens(bigram, review, token = "ngrams", n = 3)
+
+review_word_count_three = review_untoken_three %>% count(bigram,sort = T)
+
+review_sep_three = review_word_count_three %>% separate(bigram,c("word1","word2","word3"),sep = " ")
+
+review_filtered_three <- review_sep_three %>%
+  filter(!word1 %in% stop_words$word & !word2 %in% stop_words$word &!word3 %in% stop_words$word &           !str_detect(word1,pattern = "[0-9]") & 
+            !str_detect(word2,pattern = "[0-9]") &
+            !str_detect(word3,pattern = "[0-9]"))
+kableExtra::kable(review_filtered_three[1:10,],align = "c",booktabs = T, caption = "Te two words appear together",format = "latex") %>% kableExtra::kable_styling(latex_options = "HOLD_position")
+```
+
+\qquad According to above table, we can tell that:  
+
++ Customer really love the restaurants;  
++ If we go to Las Vegas, we need try the Buffalo Wild Wings;  
++ A big proportion of customers of Las Vegas restaurants may be tourists;  
+
+### Sentiment Analysis
+
+\qquad From above text analysis we see that customers love the restaurants in Las Vegas, so now I want to know more about do they really enjoy the local restaurants and how happy they are about the restaurants, so I applied sentiments analysis:  
+
+```{r}
+afinn = get_sentiments("afinn")
+colnames(afinn) = c("bigram","value")
+review_single <- review %>%
+  unnest_tokens(bigram, review, token = "ngrams", n = 1) %>% 
+  filter(!bigram %in% stop_words$word & 
+           !str_detect(bigram,pattern = "[0-9]")) %>% 
+  count(business_id,bigram,sort = T) %>% left_join(afinn,by = "bigram")
+review_single = impute(review_single,0) %>% group_by(business_id) %>% summarise(sentiments = sum(value))
+tem = inner_join(review_single,cagu.las,by = "business_id")
+
+ggplot(tem)+geom_density(aes(x = sentiments),fill = "lightblue",color = "White")+
+  geom_vline(aes(xintercept = quantile(tem$sentiments,0.25),color = "First.Quarter"))+
+  geom_vline(aes(xintercept = quantile(tem$sentiments,0.5),color = "Median"))+
+  geom_vline(aes(xintercept = quantile(tem$sentiments,0.75),color = "Third.Quarter"))+
+  scale_color_manual(name = "Quantile", values = c(First.Quarter = "red", Median = "black",Third.Quarter="darkblue")) +
+  geom_text(aes(x=quantile(tem$sentiments,0.25), label=as.character(quantile(tem$sentiments,0.25)), y=-0.01), colour="blue")+
+  geom_text(aes(x=quantile(tem$sentiments,0.5), label=as.character(quantile(tem$sentiments,0.5)), y=-0.01), colour="blue")+
+  geom_text(aes(x=quantile(tem$sentiments,0.75), label=as.character(quantile(tem$sentiments,0.75)), y=-0.01), colour="blue")
+
+```
+
+\qquad We can see that the 25% quantile of sentiments is 1, which means less than 25% feel bad about the restaurants, and also we can see that 75% quantile is 8, which means over 25% customers are very happy about the restaurants.  
+
+\qquad Next we want to explore the relationship between sentiments and star ratings:  
+
+```{r}
+tem1 = tem %>% dplyr::select(sentiments,stars) %>% 
+  group_by(stars) %>% summarise(sentiments = mean(sentiments))
+a1 = ggplot(tem1)+geom_line(aes(x = sentiments,y = stars))
+a2 = ggplot(tem) +aes(x = factor(stars), y = sentiments, group = stars) +geom_boxplot()+xlab("Star ratings")
+gridExtra::grid.arrange(a1,a2,ncol = 2)
+```
+
+\qquad Above plot shows the higher sentiment, the higher star ratings, which perfectly make sence.   
+
+## CPA and Cluster Analysis based on Text mining.  
+
+\qquad Now I want to go further, I want to see how can we cluster these restaurants with similar reviews, how does the cluster looks like and what is the common review within an cluster?  
+
+\qquad First we just count the words across all the restautants, I get a table of 100 rows and over 1300 colomns, so I decided to drop some words that are really rare across restaurants, after that I get a table of 100 rows and 75 colomns, but 75 colomns is still too much to be processed, so I used PCA to condense the data to certain amount.  
+
+\qquad Below is the polt of cumulative variance plot against number of components:  
+
+```{r include=FALSE}
+reduce_token = review_filtered %>% filter(n>1)
+
+review_single <- review %>%
+  unnest_tokens(bigram, review, token = "ngrams", n = 1) %>% 
+  filter(!bigram %in% stop_words$word & 
+           !str_detect(bigram,pattern = "[0-9]")) %>% 
+  count(business_id,bigram,sort = T) %>% filter(bigram %in% reduce_token$word1 | bigram %in% reduce_token$word2)
+
+review_wi = review_single %>% 
+  pivot_wider(names_from = bigram,values_from = n)
+review_wi = Hmisc::impute(review_wi,0)
+```
+```{r}
+review_wi_data = review_wi %>% select(-business_id)
+pca.re <- prcomp(review_wi_data, center = TRUE,scale. = TRUE)
+a = summary(pca.re)$importance %>% data.frame()
+a = t(a) %>% data.frame()
+a = a %>% mutate(PC = 1:1159)
+ggplot(a)+ geom_col(aes(x = factor(PC),y = Cumulative.Proportion))+ geom_hline(yintercept = 0.8) + 
+  scale_x_discrete(breaks = seq(1,1159,5)) + xlab("Number of Components")
+pca = pca.re$x %>% data.frame() %>% dplyr::select(paste0("PC",1:26))
+```
+
+\qquad As shown above, we use the accumulative variance as standard to select how many components we want, here I set the threshhold of 0.8, so we will have 26 Principal components.  
+
+\qquad After condensing the data, we continue doing cluster analysis, as for the number of clusters, I draw below plot to help me to decided:  
+
+```{r}
+library(cluster)
+m=10 # max number of clusters
+n=10  # number of repeats experiments for each k value
+tot = matrix(nrow = m,ncol  = n)
+# Calculate the total withingroup errors
+for(i in 1:m){
+  for(j in 1:n){
+    cl = kmeans(x = pca,centers = i)
+    tot[i,j] = cl$tot.withinss
+  }
+}
+# calculate average total within-group error
+tot = tot %>% apply(MARGIN = 1,mean)
+# plot errors
+tot = data.frame(cbind(tot,seq(1,m,1)))
+ggplot(tot) + geom_line(aes(y=tot,x = V2),size = 2) + 
+  scale_x_continuous("Number of Cluster",breaks = seq(1,m,1)) + 
+  ylab("SSE")
+```
+
+\qquad According to above plot, y axis shows the total Sum of square residuals within clusters, the idea is if there exists a good cluster number, we just increase the number of cluster, as it is close to the real number, the SSE will drop significantly, but now I didn't any pattern like that, so I cannot decide the best number of cluster, which may suggests there is clusters, which also means we can not do cluster on this, so I give up on cluster analysis.  
+
+\newpage
+
+# Mapping
+
+\qquad Besides the plot and data, I want see the geographical distribution of restaurants that comply with certain features, for example I want too see the distribution of Chinese restaurants or high rated restaurants and so on.  
+
+```{r eval=FALSE, include=FALSE}
+pl.da = tem %>% dplyr::select(sentiments,name,address,postal_code,latitude,longitude,stars)
+
+  
+
+
+lef = function(x){
+  att = x
+  getColor = function(x){
+  a = att
+  b = which(colnames(x)==a)
+  se = x[b] %>% as.data.frame()
+  n = length(unique(se[,1]))
+  set.seed(2019)
+  co = colors()
+  co.in = sample(x = 1:length(co),size = n)
+  pal <- colorFactor(
+  palette = co[co.in],
+  domain = se[,1])
+  return(list(value = se[,1],color = pal(se[,1])))
+}
+
+  re = getColor(pl.da)
+  
+plot = leaflet(data = pl.da) %>%
+  setView(mean(pl.da$longitude), mean(pl.da$latitude), zoom = 12) %>% 
+  addProviderTiles(providers$CartoDB.Positron, group = "Map") %>%
+  addProviderTiles("Esri.WorldImagery", group = "Satellite")%>% 
+  addProviderTiles("Esri.WorldShadedRelief", group = "Relief")%>%
+  addCircles(lng =~longitude,lat = ~latitude,label=~name,group = "attributes",color= ~re$color)%>%
+  addScaleBar(position = "bottomleft") %>%
+  #addLegend(group = "bottomright", pal = re$color, values = as.numeric(re$value),title = att,opacity = 1)%>%
+  addLayersControl(
+    baseGroups = c("Map", "Satellite", "Relief"),
+    overlayGroups = c("bottomright"),
+    options = layersControlOptions(collapsed = T)
+    )
+  re = data.frame(value = re$value,color = re$color) %>% distinct()
+  return(list(plot = plot,legend = re))
+}
+  
+# "sentiments"  "name"        "address"     "postal_code" "latitude"    "longitude"   "stars"  
+  
+  re = lef("sentiments")
+  invisible(print(re$plot))
+  mapview::mapshot(re$plot, file = "Rplot.png")
+  
+```
+
+```{r fig.align="c",fig.height=10,fig.width=10,dpi=500}
+pl.da = dplyr::select(tem,-c(business_id,city,state,review_count,is_open,categories,
+                             China.p,India.p,Italy.p,Japan.p,France.p,Mexico.p))
+register_google(key = "Please Check Black Board")
+base= ggmap(get_googlemap(center = c(lon = mean(pl.da$longitude), lat = mean(pl.da$latitude)),
+                    zoom = 12, scale = 4,
+                    maptype ='terrain',
+                    color = 'color'))
+post.l = pl.da %>% count(postal_code,sort = T) %>% filter(n>76)
+pl.da  = pl.da %>% filter(postal_code %in% post.l$postal_code)
+base + geom_point(aes(x = longitude, y = latitude, color = factor(attributes.RestaurantsPriceRange2) ), data = pl.da, size = 1,alpha = 0.5) + 
+  theme(legend.position="left",legend.title = element_blank())+facet_wrap(~postal_code)
+#+ scale_color_gradientn(colours=c("blue","red"), na.value ="transparent", breaks=c(0,0.5,1), labels=c("$",0.5,"$$$"), limits=c(0,1))
+```
+
+\qquad We can see that each district has restaurants with all price range, and the proportion of each price range looks quite same, so we may conclude that there is no rich districts or poor districts.  
+
+# Summary of EDA
+
+\qquad For the entire EDA I did looked at the distribution of star ratings of restaurants, applied text mining on reviews of restaurants, tried to apply cluster analysis over the result of text analysis, finally draw maps to check the geographical distribution of restaurants, below are main findings:  
+
+1. Star ratings do not vary across cities but vary across district;
+2. Noise level of a restaurants will centainly affect the star ratings of a restaurant;
+3. Chinese restaurants potentially have lower star ratings which are affected by the proportion of Chinese imigrations;
+4. From a geography perspective, restaurants with different price range are evenly distributed;
